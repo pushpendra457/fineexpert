@@ -1,0 +1,105 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fineexpert-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fineexpert}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fineexpert_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-fineexpert_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fineexpert} -d ${POSTGRES_DB:-fineexpert_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: fineexpert-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: fineexpert-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env.example
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fineexpert}:${POSTGRES_PASSWORD:-fineexpert_secret}@postgres:5432/${POSTGRES_DB:-fineexpert_db}
+      ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fineexpert}:${POSTGRES_PASSWORD:-fineexpert_secret}@postgres:5432/${POSTGRES_DB:-fineexpert_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: fineexpert-celery-worker
+    command: celery -A app.workers.celery_app worker --loglevel=info
+    env_file:
+      - backend/.env.example
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-fineexpert}:${POSTGRES_PASSWORD:-fineexpert_secret}@postgres:5432/${POSTGRES_DB:-fineexpert_db}
+      ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fineexpert}:${POSTGRES_PASSWORD:-fineexpert_secret}@postgres:5432/${POSTGRES_DB:-fineexpert_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: fineexpert-celery-beat
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    env_file:
+      - backend/.env.example
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: fineexpert-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:
